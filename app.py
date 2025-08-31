@@ -14,12 +14,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+
 # ===============================
 # CONFIGURAÇÕES INICIAIS
 # ===============================
 st.set_page_config(page_title="🌱 Gerenciador Integrado de Produção", layout="wide")
 plt.style.use("dark_background")
 sns.set_theme(style="darkgrid")
+
 
 DB_NAME = "dados_sitio.db"
 CONFIG_FILE = "config.json"
