@@ -1113,7 +1113,7 @@ def pagina_configuracoes():
         if st.button("Adicionar estágio padrão"):
             novos_estagios.append({"nome": "Novo Estágio", "dias": "0-0", "adubo": 0.0, "agua": 0.0})
         
-        config["fenologia_padrao"]["estagios"] = novos_estagios
+        config.setdefault("fenologia_padrao", {})["estagios"] = novos_estagios
     
     with tab3:
         st.subheader("Custos Médios de Insumos")
