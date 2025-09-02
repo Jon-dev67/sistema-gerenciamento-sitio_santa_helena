@@ -1182,13 +1182,13 @@ with tab4:
                 salvar_fenologia_especie(especie_selecionada, novos_estagios)
                 st.success(f"Estágios para {especie_selecionada} salvos com sucesso!")
     
-    if st.button("Salvar Configurações Gerais"):
-        config["cidade"] = cidade_new
-        config["alerta_pct_segunda"] = float(pct_alert)
-        config["alerta_prod_baixo_pct"] = float(prod_alert)
-        config["preco_medio_caixa"] = float(preco_caixa)
-        salvar_config(config)
-        st.success("Configurações salvas com sucesso!")
+            if st.button("Salvar Configurações Gerais"):
+                config["cidade"] = cidade_new
+                config["alerta_pct_segunda"] = float(pct_alert)
+                config["alerta_prod_baixo_pct"] = float(prod_alert)
+                config["preco_medio_caixa"] = float(preco_caixa)
+                salvar_config(config)
+                st.success("Configurações salvas com sucesso!")
 
 # ===============================
 # MENU PRINCIPAL
