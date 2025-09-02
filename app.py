@@ -1113,7 +1113,13 @@ def pagina_configuracoes():
         if st.button("Adicionar estágio padrão"):
             novos_estagios.append({"nome": "Novo Estágio", "dias": "0-0", "adubo": 0.0, "agua": 0.0})
         
-        config.setdefault("fenologia_padrao", {})["estagios"] = novos_estagios
+        # Substitua esta linha:
+config.setdefault("fenologia_padrao", {})["estagios"] = novos_estagios
+
+# Por esta verificação mais robusta:
+if "fenologia_padrao" not in config:
+    config["fenologia_padrao"] = {"estagios": []}
+config["fenologia_padrao"]["estagios"] = novos_estagios
     
     with tab3:
         st.subheader("Custos Médios de Insumos")
