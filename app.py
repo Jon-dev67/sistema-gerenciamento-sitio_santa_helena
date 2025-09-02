@@ -1121,7 +1121,7 @@ if "fenologia_padrao" not in config:
     config["fenologia_padrao"] = {"estagios": []}
 config["fenologia_padrao"]["estagios"] = novos_estagios
     
-    with tab3:
+with tab3:
         st.subheader("Custos Médios de Insumos")
         st.info("Configure os preços de referência para cada tipo de insumo")
         
@@ -1135,7 +1135,7 @@ config["fenologia_padrao"]["estagios"] = novos_estagios
         
         config["custo_medio_insumos"] = novos_custos
     
-    with tab4:
+with tab4:
         st.subheader("Fenologia por Espécie")
         st.info("Configure estágios fenológicos específicos para cada espécie")
         
