@@ -1074,9 +1074,6 @@ def pagina_configuracoes():
     
     tab1, tab2, tab3, tab4 = st.tabs(["Geral", "Fenologia", "Preços e Custos", "Fenologia por Espécie"])
     
-    # Mover a declaração para fora do bloco with tab2:
-    novos_estagios = []
-    
     with tab1:
         st.subheader("Configurações Gerais")
         cidade_new = st.text_input("Cidade padrão para clima", value=config.get("cidade", CIDADE_PADRAO))
@@ -1096,14 +1093,8 @@ def pagina_configuracoes():
         st.subheader("Estágios Fenológicos Padrão")
         st.info("Configure os estágios de desenvolvimento padrão para culturas sem configuração específica")
         
-        # Garantir que a estrutura existe
-        if "fenologia_padrao" not in config:
-            config["fenologia_padrao"] = {"estagios": []}
-        
-        estagios = config["fenologia_padrao"].get("estagios", [])
-        
-        # Limpar a lista antes de preencher
-        novos_estagios.clear()
+        estagios = config.get("fenologia_padrao", {}).get("estagios", [])
+        novos_estagios = []
         
         for i, estagio in enumerate(estagios):
             st.markdown(f"**Estágio {i+1}**")
@@ -1121,7 +1112,8 @@ def pagina_configuracoes():
         
         if st.button("Adicionar estágio padrão"):
             novos_estagios.append({"nome": "Novo Estágio", "dias": "0-0", "adubo": 0.0, "agua": 0.0})
-            st.rerun()
+        
+        config["fenologia_padrao"]["estagios"] = novos_estagios
     
     with tab3:
         st.subheader("Custos Médios de Insumos")
@@ -1161,7 +1153,7 @@ def pagina_configuracoes():
             estagios_especie = fenologia_especies[especie_selecionada]
             st.markdown(f"### Estágios fenológicos para {especie_selecionada}")
             
-            novos_estagios_especie = []
+            novos_estagios = []
             for i, estagio in enumerate(estagios_especie):
                 st.markdown(f"**Estágio {i+1}**")
                 col1, col2, col3, col4 = st.columns(4)
@@ -1174,26 +1166,21 @@ def pagina_configuracoes():
                 with col4:
                     agua = st.number_input("Água (L/planta)", value=float(estagio.get("agua", 0)), key=f"esp_agua_{especie_selecionada}_{i}")
                 
-                novos_estagios_especie.append({"nome": nome, "dias": dias, "adubo": adubo, "agua": agua})
+                novos_estagios.append({"nome": nome, "dias": dias, "adubo": adubo, "agua": agua})
             
             if st.button(f"Adicionar estágio para {especie_selecionada}"):
-                novos_estagios_especie.append({"nome": "Novo Estágio", "dias": "0-0", "adubo": 0.0, "agua": 0.0})
+                novos_estagios.append({"nome": "Novo Estágio", "dias": "0-0", "adubo": 0.0, "agua": 0.0})
             
             if st.button(f"Salvar estágios para {especie_selecionada}"):
-                fenologia_especies[especie_selecionada] = novos_estagios_especie
-                salvar_fenologia_especie(especie_selecionada, novos_estagios_especie)
+                fenologia_especies[especie_selecionada] = novos_estagios
+                salvar_fenologia_especie(especie_selecionada, novos_estagios)
                 st.success(f"Estágios para {especie_selecionada} salvos com sucesso!")
     
-    # Mover o botão para fora de qualquer tab (deve estar no final da função)
     if st.button("Salvar Configurações Gerais"):
         config["cidade"] = cidade_new
         config["alerta_pct_segunda"] = float(pct_alert)
         config["alerta_prod_baixo_pct"] = float(prod_alert)
         config["preco_medio_caixa"] = float(preco_caixa)
-        
-        # Atualizar os estágios fenológicos
-        config.setdefault("fenologia_padrao", {})["estagios"] = novos_estagios
-        
         salvar_config(config)
         st.success("Configurações salvas com sucesso!")
 
