@@ -72,6 +72,14 @@ def criar_tabelas():
             id INTEGER PRIMARY KEY AUTOINCREMENT, especie TEXT UNIQUE,
             estagios TEXT
         )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS precos_culturas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            cultura TEXT UNIQUE,
+            preco_primeira REAL,
+            preco_segunda REAL
+        )
         """
     ]
     
@@ -85,7 +93,7 @@ def inserir_tabela(nome_tabela, df):
     """Insere dados em uma tabela do banco"""
     conn = sqlite3.connect(DB_NAME)
     
-    if nome_tabela == "prodcution":
+    if nome_tabela == "producao":
         df = normalizar_colunas(df)
     
     df.to_sql(nome_tabela, conn, if_exists="append", index=False)
@@ -139,6 +147,39 @@ def salvar_fenologia_especie(especie, estagios):
     conn.commit()
     conn.close()
 
+def carregar_precos_culturas():
+    """Carrega os preços das culturas do banco de dados"""
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql("SELECT * FROM precos_culturas", conn)
+    conn.close()
+    
+    precos_dict = {}
+    for _, row in df.iterrows():
+        precos_dict[row['cultura']] = {
+            'preco_primeira': row['preco_primeira'],
+            'preco_segunda': row['preco_segunda']
+        }
+    
+    return precos_dict
+
+def salvar_preco_cultura(cultura, preco_primeira, preco_segunda):
+    """Salva ou atualiza o preço de uma cultura"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id FROM precos_culturas WHERE cultura = ?", (cultura,))
+    existe = cursor.fetchone()
+    
+    if existe:
+        cursor.execute("UPDATE precos_culturas SET preco_primeira = ?, preco_segunda = ? WHERE cultura = ?", 
+                      (preco_primeira, preco_segunda, cultura))
+    else:
+        cursor.execute("INSERT INTO precos_culturas (cultura, preco_primeira, preco_segunda) VALUES (?, ?, ?)", 
+                      (cultura, preco_primeira, preco_segunda))
+    
+    conn.commit()
+    conn.close()
+
 # ===============================
 # CONFIGURAÇÕES
 # ===============================
@@ -157,8 +198,8 @@ def carregar_config():
             },
             "alerta_pct_segunda": 25.0,
             "alerta_prod_baixo_pct": 30.0,
-            "preco_medio_caixa": 30.0,
-            "preco_caixa_segunda": 15.0,  # NOVO: Preço para segunda qualidade
+            "preco_padrao_primeira": 30.0,
+            "preco_padrao_segunda": 15.0,
             "custo_medio_insumos": {
                 "Adubo Orgânico": 2.5, "Adubo Químico": 4.0, "Defensivo Agrícola": 35.0,
                 "Semente": 0.5, "Muda": 1.2, "Fertilizante Foliar": 15.0, "Corretivo de Solo": 1.8
@@ -274,16 +315,48 @@ def recomendar_adubacao(estagio, especie=None):
 # ===============================
 # FUNÇÕES UTILITÁRIAS PARA CÁLCULO
 # ===============================
-def calcular_receita_total(caixas_primeira, caixas_segunda):
-    """Calcula a receita total considerando preços diferentes"""
-    preco_primeira = config.get("preco_medio_caixa", 30.0)
-    preco_segunda = config.get("preco_caixa_segunda", 15.0)
+def obter_preco_cultura(cultura, qualidade="primeira"):
+    """Obtém o preço de uma cultura específica"""
+    if cultura in precos_culturas:
+        if qualidade == "primeira":
+            return precos_culturas[cultura]['preco_primeira']
+        else:
+            return precos_culturas[cultura]['preco_segunda']
+    else:
+        # Retorna preços padrão se a cultura não estiver cadastrada
+        if qualidade == "primeira":
+            return config.get("preco_padrao_primeira", 30.0)
+        else:
+            return config.get("preco_padrao_segunda", 15.0)
+
+def calcular_receita_cultura(caixas_primeira, caixas_segunda, cultura):
+    """Calcula a receita total considerando preços específicos da cultura"""
+    preco_primeira = obter_preco_cultura(cultura, "primeira")
+    preco_segunda = obter_preco_cultura(cultura, "segunda")
     return (caixas_primeira * preco_primeira) + (caixas_segunda * preco_segunda)
 
-def calcular_lucro(caixas_primeira, caixas_segunda, custos):
-    """Calcula o lucro considerando preços diferentes por qualidade"""
-    receita = calcular_receita_total(caixas_primeira, caixas_segunda)
-    return receita - custos
+def calcular_receita_total(df_prod):
+    """Calcula a receita total considerando preços diferentes por cultura"""
+    if df_prod.empty:
+        return 0, 0, 0
+    
+    receita_primeira = 0
+    receita_segunda = 0
+    
+    for _, row in df_prod.iterrows():
+        cultura = row['cultura']
+        if cultura and cultura.strip():
+            preco_primeira = obter_preco_cultura(cultura, "primeira")
+            preco_segunda = obter_preco_cultura(cultura, "segunda")
+            receita_primeira += row['caixas'] * preco_primeira
+            receita_segunda += row['caixas_segunda'] * preco_segunda
+    
+    return receita_primeira, receita_segunda, receita_primeira + receita_segunda
+
+def calcular_lucro(df_prod, custos):
+    """Calcula o lucro considerando preços diferentes por cultura"""
+    _, _, receita_total = calcular_receita_total(df_prod)
+    return receita_total - custos
 
 # ===============================
 # DADOS AGRONÔMICOS
@@ -294,35 +367,45 @@ DADOS_AGRONOMICOS = {
         "ciclo_dias": 90, "temp_ideal": [18, 28], "umidade_ideal": [60, 80], "ph_ideal": [5.5, 6.8],
         "adubacao_base": {"N": 120, "P": 80, "K": 150},
         "pragas_comuns": ["tuta-absoluta", "mosca-branca", "ácaros"],
-        "doencas_comuns": ["requeima", "murcha-bacteriana", "oidio"]
+        "doencas_comuns": ["requeima", "murcha-bacteriana", "oidio"],
+        "preco_sugerido_primeira": 35.0,
+        "preco_sugerido_segunda": 18.0
     },
     "Pepino Japonês": {
         "densidade_plantio": 18000, "espacamento": "80x40 cm", "producao_esperada": 3.2,
         "ciclo_dias": 65, "temp_ideal": [20, 30], "umidade_ideal": [65, 80], "ph_ideal": [5.5, 6.5],
         "adubacao_base": {"N": 110, "P": 60, "K": 140},
         "pragas_comuns": ["mosca-branca", "ácaros", "vaquinha"],
-        "doencas_comuns": ["oidio", "antracnose", "viruses"]
+        "doencas_comuns": ["oidio", "antracnose", "viruses"],
+        "preco_sugerido_primeira": 28.0,
+        "preco_sugerido_segunda": 14.0
     },
     "Pepino Caipira": {
         "densidade_plantio": 15000, "espacamento": "100x50 cm", "producao_esperada": 2.8,
         "ciclo_dias": 70, "temp_ideal": [18, 28], "umidade_ideal": [60, 75], "ph_ideal": [5.8, 6.8],
         "adubacao_base": {"N": 100, "P": 50, "K": 120},
         "pragas_comuns": ["vaquinha", "broca", "ácaros"],
-        "doencas_comuns": ["oidio", "mancha-angular", "viruses"]
+        "doencas_comuns": ["oidio", "mancha-angular", "viruses"],
+        "preco_sugerido_primeira": 25.0,
+        "preco_sugerido_segunda": 12.0
     },
     "Abóbora Itália": {
         "densidade_plantio": 8000, "espacamento": "200x100 cm", "producao_esperada": 4.5,
         "ciclo_dias": 85, "temp_ideal": [20, 30], "umidade_ideal": [60, 75], "ph_ideal": [6.0, 7.0],
         "adubacao_base": {"N": 80, "P": 50, "K": 100},
         "pragas_comuns": ["vaquinha", "broca", "pulgão"],
-        "doencas_comuns": ["oidio", "antracnose", "murgas"]
+        "doencas_comuns": ["oidio", "antracnose", "murgas"],
+        "preco_sugerido_primeira": 22.0,
+        "preco_sugerido_segunda": 11.0
     },
     "Abóbora Menina": {
         "densidade_plantio": 6000, "espacamento": "250x120 cm", "producao_esperada": 6.0,
         "ciclo_dias": 95, "temp_ideal": [22, 32], "umidade_ideal": [65, 80], "ph_ideal": [6.0, 7.2],
         "adubacao_base": {"N": 70, "P": 45, "K": 90},
         "pragas_comuns": ["vaquinha", "broca", "pulgão"],
-        "doencas_comuns": ["oidio", "antracnose", "murcha-bacteriana"]
+        "doencas_comuns": ["oidio", "antracnose", "murcha-bacteriana"],
+        "preco_sugerido_primeira": 20.0,
+        "preco_sugerido_segunda": 10.0
     }
 }
 
@@ -405,7 +488,7 @@ def verificar_alertas_sanitarios(cultura, dados_clima):
     return alertas
 
 def calcular_otimizacao_espaco(estufa_area, cultura):
-    """Calcula otimização de espaço para la cultura"""
+    """Calcula otimização de espaço para a cultura"""
     if cultura not in DADOS_AGRONOMICOS:
         return None
     
@@ -441,18 +524,29 @@ def mostrar_modulo_agronomico():
         with col2:
             if cultura:
                 dados = DADOS_AGRONOMICOS[cultura]
+                preco_primeira = obter_preco_cultura(cultura, "primeira")
+                preco_segunda = obter_preco_cultura(cultura, "segunda")
+                
                 st.info(f"""**Dados Técnicos da {cultura}:**
                 - Densidade: {dados['densidade_plantio']} plantas/ha
                 - Espaçamento: {dados['espacamento']}
                 - Ciclo: {dados['ciclo_dias']} dias
-                - Produção esperada: {dados['producao_esperada']} kg/planta""")
+                - Produção esperada: {dados['producao_esperada']} kg/planta
+                - Preço 1ª: R$ {preco_primeira:.2f}/caixa
+                - Preço 2ª: R$ {preco_segunda:.2f}/caixa""")
         
         if st.button("Calcular Produção Esperada"):
             resultado = calcular_producao_esperada(cultura, area_m2)
             if resultado:
+                # Calcular receita estimada
+                receita_primeira = resultado['producao_caixas'] * 0.8 * obter_preco_cultura(cultura, "primeira")
+                receita_segunda = resultado['producao_caixas'] * 0.2 * obter_preco_cultura(cultura, "segunda")
+                receita_total = receita_primeira + receita_segunda
+                
                 st.success(f"""**Resultado para {cultura} em {area_m2}m²:**
                 - 👨‍🌾 Plantas estimadas: {resultado['plantas_estimadas']}
                 - 📦 Produção estimada: {resultado['producao_kg']} kg ({resultado['producao_caixas']} caixas)
+                - 💰 Receita estimada: R$ {receita_total:,.2f}
                 - ⏰ Ciclo: {resultado['ciclo_dias']} dias""")
     
     with tab2:
@@ -509,10 +603,16 @@ def mostrar_modulo_agronomico():
         if st.button("Calcular Otimização"):
             resultado = calcular_otimizacao_espaco(area_estufa, cultura)
             if resultado:
+                # Calcular receita estimada
+                receita_primeira = resultado['producao_estimada_kg'] / 20 * 0.8 * obter_preco_cultura(cultura, "primeira")
+                receita_segunda = resultado['producao_estimada_kg'] / 20 * 0.2 * obter_preco_cultura(cultura, "segunda")
+                receita_total = receita_primeira + receita_segunda
+                
                 st.success(f"""**Otimização para {cultura}:**
                 - 🏭 Área disponível: {resultado['area_estufa_m2']} m²
                 - 👨‍🌾 Plantas recomendadas: {resultado['plantas_recomendadas']}
                 - 📦 Produção estimada: {resultado['producao_estimada_kg']} kg
+                - 💰 Receita estimada: R$ {receita_total:,.2f}
                 - 📏 Espaçamento: {resultado['espacamento_recomendado']}
                 - 📊 Rendimento: {resultado['rendimento_por_m2']} kg/m²""")
 
@@ -564,7 +664,7 @@ def pagina_dashboard():
     df_prod = carregar_tabela("producao")
     df_ins = carregar_tabela("insumos")
     
-    # KPIs principais - AGORA COM SEPARAÇÃO DE RECEITAS
+    # KPIs principais - COM PREÇOS ESPECÍFICOS POR CULTURA
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
@@ -580,12 +680,10 @@ def pagina_dashboard():
         st.metric("💰 Custo Insumos", f"R$ {total_insumos:,.2f}")
     
     with col4:
-        receita_primeira = total_caixas * config.get("preco_medio_caixa", 30)
-        st.metric("💵 Receita 1ª Qual", f"R$ {receita_primeira:,.2f}")
+        receita_primeira, receita_segunda, receita_total = calcular_receita_total(df_prod)
+        st.metric("💵 Receita Total", f"R$ {receita_total:,.2f}")
     
     with col5:
-        receita_segunda = total_segunda * config.get("preco_caixa_segunda", 15)
-        receita_total = receita_primeira + receita_segunda
         lucro_total = receita_total - total_insumos
         st.metric("📊 Lucro Total", f"R$ {lucro_total:,.2f}", 
                  delta=f"{((lucro_total/receita_total)*100 if receita_total > 0 else 0):.1f}%")
@@ -593,7 +691,7 @@ def pagina_dashboard():
     # Gráfico de Receitas Separadas
     st.subheader("💰 Distribuição de Receitas")
     
-    if total_caixas > 0 or total_segunda > 0:
+    if not df_prod.empty:
         receitas_data = pd.DataFrame({
             'Tipo': ['1ª Qualidade', '2ª Qualidade', 'Custos'],
             'Valor (R$)': [receita_primeira, receita_segunda, -total_insumos],
@@ -604,6 +702,28 @@ def pagina_dashboard():
                     title='Receitas e Custos por Categoria', text='Valor (R$)')
         fig.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
         st.plotly_chart(fig, use_container_width=True)
+    
+    # Receita por Cultura
+    st.subheader("🌱 Receita por Cultura")
+    
+    if not df_prod.empty:
+        receitas_culturas = []
+        for cultura in df_prod['cultura'].unique():
+            if cultura and cultura.strip():
+                df_cultura = df_prod[df_prod['cultura'] == cultura]
+                rec_primeira, rec_segunda, rec_total = calcular_receita_total(df_cultura)
+                receitas_culturas.append({
+                    'Cultura': cultura,
+                    'Receita 1ª': rec_primeira,
+                    'Receita 2ª': rec_segunda,
+                    'Receita Total': rec_total
+                })
+        
+        if receitas_culturas:
+            df_receitas = pd.DataFrame(receitas_culturas)
+            fig = px.bar(df_receitas, x='Cultura', y=['Receita 1ª', 'Receita 2ª'],
+                        title='Receita por Cultura', barmode='stack')
+            st.plotly_chart(fig, use_container_width=True)
     
     # Alertas
     st.subheader("⚠️ Alertas e Recomendações")
@@ -637,8 +757,6 @@ def pagina_dashboard():
                     fig = px.bar(prod_area, x="area", y=["caixas", "caixas_segunda"], 
                                 title="Produção por Área", barmode="group")
                     st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("ℹ️ Dados de área não disponíveis para análise")
         
         with col2:
             if "data" in df_prod.columns:
@@ -648,8 +766,6 @@ def pagina_dashboard():
                     fig = px.line(prod_temporal, x="data", y=["caixas", "caixas_segunda"], 
                                  title="Evolução da Produção", markers=True)
                     st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("ℹ️ Dados de data não disponíveis para análise")
     
     if not df_ins.empty:
         col1, col2 = st.columns(2)
@@ -688,6 +804,14 @@ def pagina_cadastro_producao():
             caixas2 = st.number_input("Caixas (2ª)", min_value=0, step=1)
             observacao = st.text_input("Observações")
         
+        # Mostrar preços da cultura se existirem
+        if cultura and cultura.strip():
+            preco_primeira = obter_preco_cultura(cultura, "primeira")
+            preco_segunda = obter_preco_cultura(cultura, "segunda")
+            receita_estimada = (caixas * preco_primeira) + (caixas2 * preco_segunda)
+            
+            st.info(f"**Preços para {cultura}:** 1ª: R$ {preco_primeira:.2f} | 2ª: R$ {preco_segunda:.2f} | Receita: R$ {receita_estimada:.2f}")
+        
         st.markdown("#### Clima")
         clima_atual, previsao = buscar_clima(cidade)
         
@@ -713,7 +837,16 @@ def pagina_cadastro_producao():
 
     if not df.empty:
         st.markdown("### 📋 Registros recentes")
-        st.dataframe(df.sort_values("data", ascending=False).head(15), use_container_width=True)
+        
+        # Adicionar coluna de receita ao dataframe
+        df_display = df.copy()
+        receitas = []
+        for _, row in df_display.iterrows():
+            receita = calcular_receita_cultura(row['caixas'], row['caixas_segunda'], row['cultura'])
+            receitas.append(receita)
+        
+        df_display['Receita (R$)'] = receitas
+        st.dataframe(df_display.sort_values("data", ascending=False).head(15), use_container_width=True)
         
         st.markdown("### 🗑️ Excluir Registros")
         col1, col2 = st.columns([3, 1])
@@ -905,9 +1038,7 @@ def pagina_analise():
         st.metric("💰 Custo Total", f"R$ {custo_total:,.2f}")
     
     with col4:
-        receita_primeira = total_caixas * config.get('preco_medio_caixa', 30)
-        receita_segunda = total_segunda * config.get('preco_caixa_segunda', 15)
-        receita_total = receita_primeira + receita_segunda
+        receita_primeira, receita_segunda, receita_total = calcular_receita_total(df_prod_filtrado)
         st.metric("💵 Receita Total", f"R$ {receita_total:,.2f}")
     
     with col5:
@@ -917,7 +1048,7 @@ def pagina_analise():
     # Gráfico de Receitas Separadas
     st.subheader("💰 Distribuição de Receitas")
     
-    if total_caixas > 0 or total_segunda > 0:
+    if not df_prod_filtrado.empty:
         receitas_data = pd.DataFrame({
             'Tipo': ['1ª Qualidade', '2ª Qualidade', 'Custos'],
             'Valor (R$)': [receita_primeira, receita_segunda, -custo_total],
@@ -928,6 +1059,28 @@ def pagina_analise():
                     title='Receitas e Custos por Categoria', text='Valor (R$)')
         fig.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
         st.plotly_chart(fig, use_container_width=True)
+    
+    # Receita por Cultura
+    st.subheader("🌱 Receita por Cultura")
+    
+    if not df_prod_filtrado.empty:
+        receitas_culturas = []
+        for cultura in df_prod_filtrado['cultura'].unique():
+            if cultura and cultura.strip():
+                df_cultura = df_prod_filtrado[df_prod_filtrado['cultura'] == cultura]
+                rec_primeira, rec_segunda, rec_total = calcular_receita_total(df_cultura)
+                receitas_culturas.append({
+                    'Cultura': cultura,
+                    'Receita 1ª': rec_primeira,
+                    'Receita 2ª': rec_segunda,
+                    'Receita Total': rec_total
+                })
+        
+        if receitas_culturas:
+            df_receitas = pd.DataFrame(receitas_culturas)
+            fig = px.bar(df_receitas, x='Cultura', y=['Receita 1ª', 'Receita 2ª'],
+                        title='Receita por Cultura', barmode='stack')
+            st.plotly_chart(fig, use_container_width=True)
     
     # Análise de Produção
     if not df_prod_filtrado.empty:
@@ -986,8 +1139,6 @@ def pagina_analise():
                     fig = px.bar(prod_area, x='area', y='Produtividade',
                                 title='⚡ Produtividade Média Diária por Área')
                     st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("ℹ️ Dados de área não disponíveis para análise")
         
         with tab4:
             prod_mensal = df_prod_filtrado.copy()
@@ -1030,28 +1181,32 @@ def pagina_analise():
         
         with tab3:
             if not df_prod_filtrado.empty:
-                rentabilidade_prod = df_prod_filtrado.groupby('cultura')[['caixas', 'caixas_segunda']].sum()
-                custos_cultura_ins = df_ins_filtrado.groupby('cultura')['custo_total'].sum()
+                # Calcular rentabilidade por cultura
+                rentabilidade_data = []
+                for cultura in df_prod_filtrado['cultura'].unique():
+                    if cultura and cultura.strip():
+                        df_cultura_prod = df_prod_filtrado[df_prod_filtrado['cultura'] == cultura]
+                        df_cultura_ins = df_ins_filtrado[df_ins_filtrado['cultura'] == cultura]
+                        
+                        rec_primeira, rec_segunda, rec_total = calcular_receita_total(df_cultura_prod)
+                        custo_total = df_cultura_ins['custo_total'].sum() if not df_cultura_ins.empty else 0
+                        lucro = rec_total - custo_total
+                        
+                        if custo_total > 0:
+                            roi = (lucro / custo_total) * 100
+                        else:
+                            roi = 0
+                            
+                        rentabilidade_data.append({
+                            'Cultura': cultura,
+                            'Receita Total': rec_total,
+                            'Custo Total': custo_total,
+                            'Lucro': lucro,
+                            'ROI (%)': roi
+                        })
                 
-                culturas_comuns = list(set(rentabilidade_prod.index) & set(custos_cultura_ins.index))
-                
-                if culturas_comuns:
-                    df_rentabilidade = pd.DataFrame({
-                        'Cultura': culturas_comuns,
-                        'Receita 1ª': [
-                            rentabilidade_prod.loc[cultura, 'caixas'] * config.get('preco_medio_caixa', 30)
-                            for cultura in culturas_comuns
-                        ],
-                        'Receita 2ª': [
-                            rentabilidade_prod.loc[cultura, 'caixas_segunda'] * config.get('preco_caixa_segunda', 15)
-                            for cultura in culturas_comuns
-                        ],
-                        'Custo': [custos_cultura_ins.loc[cultura] for cultura in culturas_comuns]
-                    })
-                    
-                    df_rentabilidade['Receita Total'] = df_rentabilidade['Receita 1ª'] + df_rentabilidade['Receita 2ª']
-                    df_rentabilidade['Lucro'] = df_rentabilidade['Receita Total'] - df_rentabilidade['Custo']
-                    df_rentabilidade['ROI'] = (df_rentabilidade['Lucro'] / df_rentabilidade['Custo'] * 100).round(1)
+                if rentabilidade_data:
+                    df_rentabilidade = pd.DataFrame(rentabilidade_data)
                     
                     col1, col2 = st.columns(2)
                     
@@ -1061,11 +1216,14 @@ def pagina_analise():
                         st.plotly_chart(fig, use_container_width=True)
                     
                     with col2:
-                        fig = px.bar(df_rentabilidade, x='Cultura', y='ROI',
+                        fig = px.bar(df_rentabilidade, x='Cultura', y='ROI (%)',
                                     title='📈 ROI (%) por Cultura')
                         st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Mostrar tabela detalhada
+                    st.dataframe(df_rentabilidade.sort_values('Lucro', ascending=False), use_container_width=True)
                 else:
-                    st.info("ℹ️ Não há culturas com dados completos de produção e custos para análise de rentabilidade.")
+                    st.info("ℹ️ Não há dados suficientes para análise de rentabilidade por cultura")
     
     # Análise de Correlação e Insights
     st.header("🔍 Insights e Correlações")
@@ -1096,10 +1254,34 @@ def pagina_analise():
     
     insights = []
     
-    if 'df_rentabilidade' in locals() and not df_rentabilidade.empty:
-        cultura_lucrativa = df_rentabilidade.nlargest(1, 'ROI')['Cultura'].iloc[0]
-        roi_max = df_rentabilidade.nlargest(1, 'ROI')['ROI'].iloc[0]
-        insights.append(f"✅ **{cultura_lucrativa}** é a cultura mais rentável (ROI: {roi_max}%)")
+    if not df_prod_filtrado.empty:
+        # Verificar culturas mais rentáveis
+        rentabilidade_data = []
+        for cultura in df_prod_filtrado['cultura'].unique():
+            if cultura and cultura.strip():
+                df_cultura_prod = df_prod_filtrado[df_prod_filtrado['cultura'] == cultura]
+                df_cultura_ins = df_ins_filtrado[df_ins_filtrado['cultura'] == cultura]
+                
+                rec_primeira, rec_segunda, rec_total = calcular_receita_total(df_cultura_prod)
+                custo_total = df_cultura_ins['custo_total'].sum() if not df_cultura_ins.empty else 0
+                lucro = rec_total - custo_total
+                
+                if custo_total > 0:
+                    roi = (lucro / custo_total) * 100
+                else:
+                    roi = 0
+                    
+                rentabilidade_data.append({
+                    'Cultura': cultura,
+                    'Lucro': lucro,
+                    'ROI': roi
+                })
+        
+        if rentabilidade_data:
+            df_rentabilidade = pd.DataFrame(rentabilidade_data)
+            cultura_lucrativa = df_rentabilidade.nlargest(1, 'ROI')['Cultura'].iloc[0]
+            roi_max = df_rentabilidade.nlargest(1, 'ROI')['ROI'].iloc[0]
+            insights.append(f"✅ **{cultura_lucrativa}** é a cultura mais rentável (ROI: {roi_max:.1f}%)")
     
     if 'pct_segunda' in locals() and pct_segunda > config.get('alerta_pct_segunda', 25):
         insights.append(f"⚠️ **Alerta**: Percentual de 2ª qualidade ({pct_segunda:.1f}%) acima do limite recomendado")
@@ -1126,7 +1308,7 @@ def pagina_configuracoes():
     """Página de configurações do sistema"""
     st.title("⚙️ Configurações do Sistema")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["Geral", "Fenologia", "Preços e Custos", "Fenologia por Espécie"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Geral", "Fenologia", "Preços Culturas", "Custos Insumos", "Fenologia por Espécie"])
     
     with tab1:
         st.subheader("Configurações Gerais")
@@ -1140,12 +1322,11 @@ def pagina_configuracoes():
                                     min_value=0.0, max_value=100.0,
                                     value=float(config.get("alerta_prod_baixo_pct", 30.0)))
         
-        preco_caixa = st.number_input("Preço médio da caixa 1ª (R$)", min_value=0.0, 
-                                     value=float(config.get("preco_medio_caixa", 30.0)))
+        preco_padrao_primeira = st.number_input("Preço padrão caixa 1ª (R$)", min_value=0.0, 
+                                     value=float(config.get("preco_padrao_primeira", 30.0)))
         
-        # NOVO: Preço para segunda qualidade
-        preco_segunda = st.number_input("Preço médio da caixa 2ª (R$)", min_value=0.0,
-                                       value=float(config.get("preco_caixa_segunda", 15.0)))
+        preco_padrao_segunda = st.number_input("Preço padrão caixa 2ª (R$)", min_value=0.0,
+                                       value=float(config.get("preco_padrao_segunda", 15.0)))
     
     with tab2:
         st.subheader("Estágios Fenológicos Padrão")
@@ -1174,6 +1355,56 @@ def pagina_configuracoes():
         config["fenologia_padrao"]["estagios"] = novos_estagios
     
     with tab3:
+        st.subheader("Preços por Cultura")
+        st.info("Configure os preços específicos para cada cultura")
+        
+        # Lista de culturas únicas do banco de dados
+        df_prod = carregar_tabela("producao")
+        culturas_unicas = sorted([c for c in df_prod['cultura'].unique() if c and c.strip()])
+        
+        # Adicionar culturas padrão que não estão no banco ainda
+        for cultura in DADOS_AGRONOMICOS.keys():
+            if cultura not in culturas_unicas:
+                culturas_unicas.append(cultura)
+        
+        cultura_selecionada = st.selectbox("Selecione a cultura:", culturas_unicas)
+        
+        if cultura_selecionada:
+            preco_atual_primeira = obter_preco_cultura(cultura_selecionada, "primeira")
+            preco_atual_segunda = obter_preco_cultura(cultura_selecionada, "segunda")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                novo_preco_primeira = st.number_input("Preço 1ª Qualidade (R$)", 
+                                                    value=float(preco_atual_primeira),
+                                                    min_value=0.0, step=0.5)
+            with col2:
+                novo_preco_segunda = st.number_input("Preço 2ª Qualidade (R$)", 
+                                                   value=float(preco_atual_segunda),
+                                                   min_value=0.0, step=0.5)
+            
+            if st.button(f"Salvar preços para {cultura_selecionada}"):
+                salvar_preco_cultura(cultura_selecionada, novo_preco_primeira, novo_preco_segunda)
+                st.success(f"Preços para {cultura_selecionada} salvos com sucesso!")
+                # Atualizar o dicionário de preços
+                global precos_culturas
+                precos_culturas = carregar_precos_culturas()
+        
+        # Tabela de preços atuais
+        st.subheader("Tabela de Preços Atuais")
+        precos_lista = []
+        for cultura, precos in precos_culturas.items():
+            precos_lista.append({
+                'Cultura': cultura,
+                'Preço 1ª': precos['preco_primeira'],
+                'Preço 2ª': precos['preco_segunda']
+            })
+        
+        if precos_lista:
+            df_precos = pd.DataFrame(precos_lista)
+            st.dataframe(df_precos, use_container_width=True)
+    
+    with tab4:
         st.subheader("Custos Médios de Insumos")
         st.info("Configure os preços de referência para cada tipo de insumo")
         
@@ -1187,7 +1418,7 @@ def pagina_configuracoes():
         
         config["custo_medio_insumos"] = novos_custos
     
-    with tab4:
+    with tab5:
         st.subheader("Fenologia por Espécie")
         st.info("Configure estágios fenológicos específicos para cada espécie")
         
@@ -1238,8 +1469,8 @@ def pagina_configuracoes():
         config["cidade"] = cidade_new
         config["alerta_pct_segunda"] = float(pct_alert)
         config["alerta_prod_baixo_pct"] = float(prod_alert)
-        config["preco_medio_caixa"] = float(preco_caixa)
-        config["preco_caixa_segunda"] = float(preco_segunda)  # NOVO
+        config["preco_padrao_primeira"] = float(preco_padrao_primeira)
+        config["preco_padrao_segunda"] = float(preco_padrao_segunda)
         salvar_config(config)
         st.success("Configurações salvas com sucesso!")
 
@@ -1250,9 +1481,10 @@ def main():
     """Função principal da aplicação"""
     # Inicialização
     criar_tabelas()
-    global config, fenologia_especies
+    global config, fenologia_especies, precos_culturas
     config = carregar_config()
     fenologia_especies = carregar_fenologia_especies()
+    precos_culturas = carregar_precos_culturas()
     
     # Sidebar
     st.sidebar.title("📌 Menu Navegação")
