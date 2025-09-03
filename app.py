@@ -85,7 +85,7 @@ def inserir_tabela(nome_tabela, df):
     """Insere dados em uma tabela do banco"""
     conn = sqlite3.connect(DB_NAME)
     
-    if nome_tabela == "producao":
+    if nome_tabela == "prodcution":
         df = normalizar_colunas(df)
     
     df.to_sql(nome_tabela, conn, if_exists="append", index=False)
@@ -158,6 +158,7 @@ def carregar_config():
             "alerta_pct_segunda": 25.0,
             "alerta_prod_baixo_pct": 30.0,
             "preco_medio_caixa": 30.0,
+            "preco_caixa_segunda": 15.0,  # NOVO: Preço para segunda qualidade
             "custo_medio_insumos": {
                 "Adubo Orgânico": 2.5, "Adubo Químico": 4.0, "Defensivo Agrícola": 35.0,
                 "Semente": 0.5, "Muda": 1.2, "Fertilizante Foliar": 15.0, "Corretivo de Solo": 1.8
@@ -271,6 +272,20 @@ def recomendar_adubacao(estagio, especie=None):
     return "Sem recomendação específica"
 
 # ===============================
+# FUNÇÕES UTILITÁRIAS PARA CÁLCULO
+# ===============================
+def calcular_receita_total(caixas_primeira, caixas_segunda):
+    """Calcula a receita total considerando preços diferentes"""
+    preco_primeira = config.get("preco_medio_caixa", 30.0)
+    preco_segunda = config.get("preco_caixa_segunda", 15.0)
+    return (caixas_primeira * preco_primeira) + (caixas_segunda * preco_segunda)
+
+def calcular_lucro(caixas_primeira, caixas_segunda, custos):
+    """Calcula o lucro considerando preços diferentes por qualidade"""
+    receita = calcular_receita_total(caixas_primeira, caixas_segunda)
+    return receita - custos
+
+# ===============================
 # DADOS AGRONÔMICOS
 # ===============================
 DADOS_AGRONOMICOS = {
@@ -300,7 +315,7 @@ DADOS_AGRONOMICOS = {
         "ciclo_dias": 85, "temp_ideal": [20, 30], "umidade_ideal": [60, 75], "ph_ideal": [6.0, 7.0],
         "adubacao_base": {"N": 80, "P": 50, "K": 100},
         "pragas_comuns": ["vaquinha", "broca", "pulgão"],
-        "doencas_comuns": ["oidio", "antracnose", "murcha"]
+        "doencas_comuns": ["oidio", "antracnose", "murgas"]
     },
     "Abóbora Menina": {
         "densidade_plantio": 6000, "espacamento": "250x120 cm", "producao_esperada": 6.0,
@@ -390,7 +405,7 @@ def verificar_alertas_sanitarios(cultura, dados_clima):
     return alertas
 
 def calcular_otimizacao_espaco(estufa_area, cultura):
-    """Calcula otimização de espaço para a cultura"""
+    """Calcula otimização de espaço para la cultura"""
     if cultura not in DADOS_AGRONOMICOS:
         return None
     
@@ -549,8 +564,8 @@ def pagina_dashboard():
     df_prod = carregar_tabela("producao")
     df_ins = carregar_tabela("insumos")
     
-    # KPIs principais
-    col1, col2, col3, col4 = st.columns(4)
+    # KPIs principais - AGORA COM SEPARAÇÃO DE RECEITAS
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         total_caixas = df_prod["caixas"].sum() if not df_prod.empty else 0
@@ -565,9 +580,30 @@ def pagina_dashboard():
         st.metric("💰 Custo Insumos", f"R$ {total_insumos:,.2f}")
     
     with col4:
-        receita_estimada = total_caixas * config.get("preco_medio_caixa", 30)
-        lucro_estimado = receita_estimada - total_insumos if receita_estimada else 0
-        st.metric("💵 Lucro Estimado", f"R$ {lucro_estimado:,.2f}")
+        receita_primeira = total_caixas * config.get("preco_medio_caixa", 30)
+        st.metric("💵 Receita 1ª Qual", f"R$ {receita_primeira:,.2f}")
+    
+    with col5:
+        receita_segunda = total_segunda * config.get("preco_caixa_segunda", 15)
+        receita_total = receita_primeira + receita_segunda
+        lucro_total = receita_total - total_insumos
+        st.metric("📊 Lucro Total", f"R$ {lucro_total:,.2f}", 
+                 delta=f"{((lucro_total/receita_total)*100 if receita_total > 0 else 0):.1f}%")
+    
+    # Gráfico de Receitas Separadas
+    st.subheader("💰 Distribuição de Receitas")
+    
+    if total_caixas > 0 or total_segunda > 0:
+        receitas_data = pd.DataFrame({
+            'Tipo': ['1ª Qualidade', '2ª Qualidade', 'Custos'],
+            'Valor (R$)': [receita_primeira, receita_segunda, -total_insumos],
+            'Categoria': ['Receita', 'Receita', 'Custo']
+        })
+        
+        fig = px.bar(receitas_data, x='Tipo', y='Valor (R$)', color='Categoria',
+                    title='Receitas e Custos por Categoria', text='Valor (R$)')
+        fig.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
+        st.plotly_chart(fig, use_container_width=True)
     
     # Alertas
     st.subheader("⚠️ Alertas e Recomendações")
@@ -853,7 +889,7 @@ def pagina_analise():
     # Métricas de performance
     st.header("📈 Métricas de Performance")
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         total_caixas = df_prod_filtrado['caixas'].sum() if not df_prod_filtrado.empty else 0
@@ -869,9 +905,29 @@ def pagina_analise():
         st.metric("💰 Custo Total", f"R$ {custo_total:,.2f}")
     
     with col4:
-        receita_estimada = total_caixas * config.get('preco_medio_caixa', 30)
-        lucro = receita_estimada - custo_total
-        st.metric("💵 Lucro Estimado", f"R$ {lucro:,.2f}")
+        receita_primeira = total_caixas * config.get('preco_medio_caixa', 30)
+        receita_segunda = total_segunda * config.get('preco_caixa_segunda', 15)
+        receita_total = receita_primeira + receita_segunda
+        st.metric("💵 Receita Total", f"R$ {receita_total:,.2f}")
+    
+    with col5:
+        lucro = receita_total - custo_total
+        st.metric("📊 Lucro Estimado", f"R$ {lucro:,.2f}")
+    
+    # Gráfico de Receitas Separadas
+    st.subheader("💰 Distribuição de Receitas")
+    
+    if total_caixas > 0 or total_segunda > 0:
+        receitas_data = pd.DataFrame({
+            'Tipo': ['1ª Qualidade', '2ª Qualidade', 'Custos'],
+            'Valor (R$)': [receita_primeira, receita_segunda, -custo_total],
+            'Categoria': ['Receita', 'Receita', 'Custo']
+        })
+        
+        fig = px.bar(receitas_data, x='Tipo', y='Valor (R$)', color='Categoria',
+                    title='Receitas e Custos por Categoria', text='Valor (R$)')
+        fig.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
+        st.plotly_chart(fig, use_container_width=True)
     
     # Análise de Produção
     if not df_prod_filtrado.empty:
@@ -966,12 +1022,6 @@ def pagina_analise():
         with tab2:
             custos_mensal = df_ins_filtrado.copy()
             custos_mensal['mes'] = custos_mensal['data'].dt.to_period('M').astype(str)
-
-        # ... (continuação do código anterior)
-
-        with tab2:
-            custos_mensal = df_ins_filtrado.copy()
-            custos_mensal['mes'] = custos_mensal['data'].dt.to_period('M').astype(str)
             custos_mensal = custos_mensal.groupby('mes')['custo_total'].sum().reset_index()
             
             fig = px.line(custos_mensal, x='mes', y='custo_total',
@@ -988,15 +1038,19 @@ def pagina_analise():
                 if culturas_comuns:
                     df_rentabilidade = pd.DataFrame({
                         'Cultura': culturas_comuns,
-                        'Receita': [
-                            (rentabilidade_prod.loc[cultura, 'caixas'] * config.get('preco_medio_caixa', 30)) + 
-                            (rentabilidade_prod.loc[cultura, 'caixas_segunda'] * config.get('preco_medio_caixa', 30) * 0.5)
+                        'Receita 1ª': [
+                            rentabilidade_prod.loc[cultura, 'caixas'] * config.get('preco_medio_caixa', 30)
+                            for cultura in culturas_comuns
+                        ],
+                        'Receita 2ª': [
+                            rentabilidade_prod.loc[cultura, 'caixas_segunda'] * config.get('preco_caixa_segunda', 15)
                             for cultura in culturas_comuns
                         ],
                         'Custo': [custos_cultura_ins.loc[cultura] for cultura in culturas_comuns]
                     })
                     
-                    df_rentabilidade['Lucro'] = df_rentabilidade['Receita'] - df_rentabilidade['Custo']
+                    df_rentabilidade['Receita Total'] = df_rentabilidade['Receita 1ª'] + df_rentabilidade['Receita 2ª']
+                    df_rentabilidade['Lucro'] = df_rentabilidade['Receita Total'] - df_rentabilidade['Custo']
                     df_rentabilidade['ROI'] = (df_rentabilidade['Lucro'] / df_rentabilidade['Custo'] * 100).round(1)
                     
                     col1, col2 = st.columns(2)
@@ -1086,8 +1140,12 @@ def pagina_configuracoes():
                                     min_value=0.0, max_value=100.0,
                                     value=float(config.get("alerta_prod_baixo_pct", 30.0)))
         
-        preco_caixa = st.number_input("Preço médio da caixa (R$)", min_value=0.0, 
+        preco_caixa = st.number_input("Preço médio da caixa 1ª (R$)", min_value=0.0, 
                                      value=float(config.get("preco_medio_caixa", 30.0)))
+        
+        # NOVO: Preço para segunda qualidade
+        preco_segunda = st.number_input("Preço médio da caixa 2ª (R$)", min_value=0.0,
+                                       value=float(config.get("preco_caixa_segunda", 15.0)))
     
     with tab2:
         st.subheader("Estágios Fenológicos Padrão")
@@ -1181,6 +1239,7 @@ def pagina_configuracoes():
         config["alerta_pct_segunda"] = float(pct_alert)
         config["alerta_prod_baixo_pct"] = float(prod_alert)
         config["preco_medio_caixa"] = float(preco_caixa)
+        config["preco_caixa_segunda"] = float(preco_segunda)  # NOVO
         salvar_config(config)
         st.success("Configurações salvas com sucesso!")
 
