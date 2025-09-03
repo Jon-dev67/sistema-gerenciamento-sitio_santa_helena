@@ -7,3 +7,4 @@ plotly
 requests
 openpyxl
 reportlab
+xlsxwriter
